@@ -2,6 +2,14 @@
 
 `aws-default-cleaner` is a command line tool to delete default VPCs, subnets and internet gateways from your AWS account
 
+# Installation
+
+Install package using `pip` package-manager
+
+``` shell
+pip install aws-default-cleaner
+```
+
 # Usage
 
 ## Basic usage

@@ -1,0 +1,150 @@
+#!/usr/bin/python
+
+import logging
+import traceback
+import string
+import boto3
+import botocore
+import click
+import pkg_resources
+
+PROG_NAME = 'aws-default-cleaner'
+VERSION = pkg_resources.require(PROG_NAME)[0].version
+
+class AwsDefaultCleaner(object):
+
+    def __init__(self, assume_roles, regions, dry_run=True):
+        self.dry_run = dry_run
+        self.assume_roles = assume_roles
+        self.regions = regions
+        self._setup_logging()
+
+    def _setup_logging(self):
+        self._log = logging.getLogger(PROG_NAME)
+        self._log.setLevel(logging.DEBUG)
+        ch = logging.StreamHandler()
+        formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        ch.setFormatter(formatter)
+        self._log.addHandler(ch)
+
+    def _aws_session(self, role_arn=None, session_name='default'):
+        try:
+            if role_arn:
+                client = boto3.client('sts')
+                response = client.assume_role(RoleArn=role_arn, RoleSessionName=session_name)
+                session = boto3.Session(
+                    aws_access_key_id=response['Credentials']['AccessKeyId'],
+                    aws_secret_access_key=response['Credentials']['SecretAccessKey'],
+                    aws_session_token=response['Credentials']['SessionToken'])
+                return session
+            else:
+                return boto3.Session()
+        except botocore.exceptions.ClientError as e:
+            self._log.error('Failed to establish AWS session: %s' % e.response['Error']['Message'])
+            raise
+
+    def _process_default_vpcs(self):
+        if self.regions == ():
+            self._log.info('Checking default VPCs in all regions...')
+            regions = self._session.get_available_regions('ec2')
+        else:
+            self._log.info('Checking default VPCs in supplied regions...')
+            regions = self.regions
+
+
+        for region in regions:
+            ec2 = self._session.client('ec2', region_name=region)
+            try:
+                vpcs = ec2.describe_vpcs(Filters=[{ 'Name': 'isDefault', 'Values': ['true'] }])
+                if not vpcs.get('Vpcs'):
+                    self._log.info('No default VPCs found in %s' % region)
+                else:
+                    default_vpc_id = vpcs['Vpcs'][0]['VpcId']
+                    if self.dry_run:
+                        self._log.info('Found default VPC %s in %s...' % (default_vpc_id, region))
+                    else:
+                        self._log.info('Deleting default VPC %s in %s...' % (default_vpc_id, region))
+                        default_internet_gateways = ec2.describe_internet_gateways(
+                            Filters=[{ "Name": "attachment.vpc-id", "Values": [default_vpc_id] }]
+                        )
+                        try:
+                            for internet_gateway in default_internet_gateways["InternetGateways"]:
+                                for attachment in internet_gateway["Attachments"]:
+                                    self._log.info('Deleting default IGW %s in %s...' % (internet_gateway["InternetGatewayId"], region))
+                                    ec2.detach_internet_gateway(
+                                        InternetGatewayId=internet_gateway["InternetGatewayId"],
+                                        VpcId=attachment["VpcId"]
+                                    )
+                                ec2.delete_internet_gateway(
+                                    InternetGatewayId=internet_gateway["InternetGatewayId"]
+                                )
+                        except botocore.exceptions.ClientError as e:
+                                self._log.error(e.response['Error']['Message'])
+                        default_subnets = ec2.describe_subnets(
+                            Filters=[{
+                                "Name": "vpc-id",
+                                "Values": [default_vpc_id]
+                            }]
+                        )
+
+                        for subnet in default_subnets["Subnets"]:
+                            self._log.info('Deleting default Subnet %s in %s...' % (subnet["SubnetId"], region))
+                            try:
+                                ec2.delete_subnet(SubnetId=subnet["SubnetId"])
+                            except botocore.exceptions.ClientError as e:
+                                self._log.error(e.response['Error']['Message'])
+
+                        try:
+                            ec2.delete_vpc(VpcId=default_vpc_id)
+                        except botocore.exceptions.ClientError as e:
+                            self._log.error(e.response['Error']['Message'])
+            except botocore.exceptions.ClientError as e:
+                    self._log.error("Unable to describe VPCs in region %s " % region)
+                    self._log.error(e.response['Error']['Message'])
+
+    def run(self):
+        try:
+            if self.assume_roles == ():
+                self._log.info("No roles specified, working with current credentials")
+                self._session = self._aws_session()
+                self._process_default_vpcs()
+            else:
+                for role in self.assume_roles:
+                    self._log.info('Assuming role "%s"' % role)
+                    self._session = self._aws_session(role)
+                    self._process_default_vpcs()
+
+            self._log.info('Operation finished successfully!')
+        except botocore.exceptions.ClientError as e:
+            self._log.error('Operation failed!')
+        except Exception as e:
+            self._log.error('Operation failed!')
+            self._log.error(traceback.format_exc())       
+
+
+@click.group()
+@click.version_option(version=VERSION, prog_name=PROG_NAME)
+def aws_default_cleaner():
+    pass
+
+@click.command()
+@click.argument('discover', required=False)
+@click.option('--assume', '-a', help='List of roles to assume', multiple=True)
+@click.option('--region', '-r', help='List of regions to process', multiple=True)
+def discover(discover, assume, region):
+    """Discovers default resources that can be deleted"""
+    AwsDefaultCleaner(assume, region, True).run()
+
+@click.command()
+@click.argument('delete', required=False)
+@click.option('--assume', '-a', help='List of roles to assume', multiple=True)
+@click.option('--region', '-r', help='List of regions to process', multiple=True)
+def delete(delete, assume, region):
+    """Deletes default resources"""
+    AwsDefaultCleaner(assume, region, False).run()
+
+aws_default_cleaner.add_command(discover)
+aws_default_cleaner.add_command(delete)
+
+if __name__ == '__main__':
+    aws_default_cleaner()

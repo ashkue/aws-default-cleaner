@@ -4,7 +4,7 @@
 
 # Installation
 
-Install package using `pip` package-manager
+Install package using [pip](https://pypi.org/project/aws-default-cleaner/) package-manager
 
 ``` shell
 pip install aws-default-cleaner

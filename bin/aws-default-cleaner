@@ -3,10 +3,11 @@
 import logging
 import traceback
 import string
-import boto3
-import botocore
 import click
 import pkg_resources
+import boto3
+import botocore
+from botocore.exceptions import ClientError
 
 PROG_NAME = 'aws-default-cleaner'
 VERSION = pkg_resources.require(PROG_NAME)[0].version
@@ -39,11 +40,67 @@ class AwsDefaultCleaner(object):
                 return session
             else:
                 return boto3.Session()
-        except botocore.exceptions.ClientError as e:
+        except ClientError as e:
             self._log.error('Failed to establish AWS session: %s' % e.response['Error']['Message'])
             raise
 
-    def _process_default_vpcs(self):
+    def _process_default_igw(self, client, default_vpc_id, region):
+        igws = client.describe_internet_gateways(
+            Filters=[{ "Name": "attachment.vpc-id", "Values": [default_vpc_id] }]
+        )
+        
+        for igw in igws["InternetGateways"]:
+            message_igw = 'Default Internet Gateway %s has been found in %s' % (igw["InternetGatewayId"], region)
+            if self.dry_run:
+                self._log.info(message_igw)
+            else:
+                self._log.info('%s ...deleting' % message_igw)
+                try:                    
+                    for attachment in igw["Attachments"]:                    
+                        client.detach_internet_gateway(InternetGatewayId=igw["InternetGatewayId"], VpcId=attachment["VpcId"])
+                    client.delete_internet_gateway(InternetGatewayId=igw["InternetGatewayId"])
+                except ClientError as e:
+                    self._log.error(e.response['Error']['Message'])
+
+    def _process_default_subnets(self, client, default_vpc_id, region):
+        subnets = client.describe_subnets(
+            Filters=[{ "Name": "vpc-id", "Values": [default_vpc_id] }]
+        )
+        
+        for subnet in subnets["Subnets"]:
+            message_subnet = 'Default Subnet %s has been found in %s' % (subnet["SubnetId"], region)
+            if self.dry_run:
+                self._log.info(message_subnet)
+            else:
+                self._log.info('%s ...deleting' % message_subnet)
+                try:                    
+                    client.delete_subnet(SubnetId=subnet["SubnetId"])
+                except ClientError as e:
+                    self._log.error(e.response['Error']['Message'])
+
+    def _process_default_vpc(self, client, region):
+        try:
+            vpcs = client.describe_vpcs(Filters=[{ 'Name': 'isDefault', 'Values': ['true'] }])
+            if not vpcs.get('Vpcs'):
+                self._log.info('No default VPCs has been found in %s' % region)
+            else:
+                default_vpc_id = vpcs['Vpcs'][0]['VpcId']
+                self._process_default_igw(client, default_vpc_id, region)
+                self._process_default_subnets(client, default_vpc_id, region)
+
+                message_vpc = 'Default VPC %s has been found in %s' % (default_vpc_id, region)
+                if self.dry_run:
+                    self._log.info(message_vpc)
+                else:
+                    self._log.info('%s ...deleting' % message_vpc)                    
+                    try:
+                        client.delete_vpc(VpcId=default_vpc_id)
+                    except ClientError as e:
+                        self._log.error(e.response['Error']['Message'])
+        except ClientError as e:
+                self._log.error("Unable to describe VPCs in region %s: %s" % (region, e.response['Error']['Message']))
+
+    def _process_regions(self):
         if self.regions == ():
             self._log.info('Checking default VPCs in all regions...')
             regions = self._session.get_available_regions('ec2')
@@ -51,76 +108,26 @@ class AwsDefaultCleaner(object):
             self._log.info('Checking default VPCs in supplied regions...')
             regions = self.regions
 
-
         for region in regions:
-            ec2 = self._session.client('ec2', region_name=region)
-            try:
-                vpcs = ec2.describe_vpcs(Filters=[{ 'Name': 'isDefault', 'Values': ['true'] }])
-                if not vpcs.get('Vpcs'):
-                    self._log.info('No default VPCs found in %s' % region)
-                else:
-                    default_vpc_id = vpcs['Vpcs'][0]['VpcId']
-                    if self.dry_run:
-                        self._log.info('Found default VPC %s in %s...' % (default_vpc_id, region))
-                    else:
-                        self._log.info('Deleting default VPC %s in %s...' % (default_vpc_id, region))
-                        default_internet_gateways = ec2.describe_internet_gateways(
-                            Filters=[{ "Name": "attachment.vpc-id", "Values": [default_vpc_id] }]
-                        )
-                        try:
-                            for internet_gateway in default_internet_gateways["InternetGateways"]:
-                                for attachment in internet_gateway["Attachments"]:
-                                    self._log.info('Deleting default IGW %s in %s...' % (internet_gateway["InternetGatewayId"], region))
-                                    ec2.detach_internet_gateway(
-                                        InternetGatewayId=internet_gateway["InternetGatewayId"],
-                                        VpcId=attachment["VpcId"]
-                                    )
-                                ec2.delete_internet_gateway(
-                                    InternetGatewayId=internet_gateway["InternetGatewayId"]
-                                )
-                        except botocore.exceptions.ClientError as e:
-                                self._log.error(e.response['Error']['Message'])
-                        default_subnets = ec2.describe_subnets(
-                            Filters=[{
-                                "Name": "vpc-id",
-                                "Values": [default_vpc_id]
-                            }]
-                        )
-
-                        for subnet in default_subnets["Subnets"]:
-                            self._log.info('Deleting default Subnet %s in %s...' % (subnet["SubnetId"], region))
-                            try:
-                                ec2.delete_subnet(SubnetId=subnet["SubnetId"])
-                            except botocore.exceptions.ClientError as e:
-                                self._log.error(e.response['Error']['Message'])
-
-                        try:
-                            ec2.delete_vpc(VpcId=default_vpc_id)
-                        except botocore.exceptions.ClientError as e:
-                            self._log.error(e.response['Error']['Message'])
-            except botocore.exceptions.ClientError as e:
-                    self._log.error("Unable to describe VPCs in region %s " % region)
-                    self._log.error(e.response['Error']['Message'])
+            client = self._session.client('ec2', region_name=region)
+            self._process_default_vpc(client, region)
 
     def run(self):
         try:
             if self.assume_roles == ():
-                self._log.info("No roles specified, working with current credentials")
+                self._log.info("No roles specified, working with current AWS credentials")
                 self._session = self._aws_session()
-                self._process_default_vpcs()
+                self._process_regions()
             else:
                 for role in self.assume_roles:
                     self._log.info('Assuming role "%s"' % role)
                     self._session = self._aws_session(role)
-                    self._process_default_vpcs()
+                    self._process_regions()
 
             self._log.info('Operation finished successfully!')
-        except botocore.exceptions.ClientError as e:
-            self._log.error('Operation failed!')
         except Exception as e:
             self._log.error('Operation failed!')
-            self._log.error(traceback.format_exc())       
-
+            self._log.error(traceback.format_exc())
 
 @click.group()
 @click.version_option(version=VERSION, prog_name=PROG_NAME)

@@ -4,7 +4,7 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(name='aws-default-cleaner',
-    version='1.0.2',
+    version='1.0.3',
     description='AWS Default Cleaner - default VPC, default subnets, default internet gateway and etc',
     long_description=long_description,
     long_description_content_type="text/markdown",

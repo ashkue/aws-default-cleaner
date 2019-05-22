@@ -37,7 +37,7 @@ aws-default-cleaner delete -a arn:aws:iam::XXXXXXXXXXXX:role/infra-admin-assumer
 
 ## Region filtering
 
-By default `aws-default-cleaner` will search for the default resources in the all available regions, but you can override this behavior by supplying `--assume` or `-a` flags.
+By default `aws-default-cleaner` will search for the default resources in the all available regions, but you can override this behavior by supplying `--region` or `-r` flags.
 
 Example:
 ``` shell

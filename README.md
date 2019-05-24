@@ -1,6 +1,13 @@
 # Introduction
 
-`aws-default-cleaner` is a command line tool to delete default VPCs, subnets and internet gateways from your AWS account
+`aws-default-cleaner` is a command line tool to delete default AWS account resources:
+
+- VPCs
+- Subnets
+- Internet Gateways
+- Route Tables
+- Network ACLs
+- Security Groups
 
 # Installation
 
@@ -16,8 +23,8 @@ pip install aws-default-cleaner
 
 Currently this tool supports two operations: `discover` and `delete`.
 
-- `discover` command searches for default VPCs in the AWS account and outputs VPC ids (no objects deleted)
-- `delete` command tries to delete default VPCs and associated subnets and internet gateways
+- `discover` command searches for default VPCs and other resources in the AWS account and outputs ids (no objects deleted)
+- `delete` command tries to delete default VPCs and associated Subnets, Internet Gateways, Route Tables, Network ACLs and Security Groups
 
 Example:
 ``` shell

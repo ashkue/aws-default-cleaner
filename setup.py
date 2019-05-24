@@ -4,8 +4,8 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(name='aws-default-cleaner',
-    version='1.0.3',
-    description='AWS Default Cleaner - default VPC, default subnets, default internet gateway and etc',
+    version='1.0.4',
+    description='AWS Default Cleaner - delete default VPCs and associated Subnets, Internet Gateways, Route Tables, Network ACLs and Security Groups',
     long_description=long_description,
     long_description_content_type="text/markdown",
     url='https://github.com/ashkue/aws-default-cleaner',

@@ -44,37 +44,84 @@ class AwsDefaultCleaner(object):
             self._log.error('Failed to establish AWS session: %s' % e.response['Error']['Message'])
             raise
 
-    def _process_default_igw(self, client, default_vpc_id, region):
-        igws = client.describe_internet_gateways(
-            Filters=[{ "Name": "attachment.vpc-id", "Values": [default_vpc_id] }]
-        )
+    def _process_default_igw(self, client, default_vpc_filter_igw, region):
+        entities = client.describe_internet_gateways(Filters=[default_vpc_filter_igw])
         
-        for igw in igws["InternetGateways"]:
-            message_igw = 'Default Internet Gateway %s has been found in %s' % (igw["InternetGatewayId"], region)
+        for entity in entities["InternetGateways"]:
+            message = '[%s] Default Internet Gateway %s has been found' % (region, entity["InternetGatewayId"])
             if self.dry_run:
-                self._log.info(message_igw)
+                self._log.info(message)
             else:
-                self._log.info('%s ...deleting' % message_igw)
+                self._log.info('%s ...deleting' % message)
                 try:                    
-                    for attachment in igw["Attachments"]:                    
-                        client.detach_internet_gateway(InternetGatewayId=igw["InternetGatewayId"], VpcId=attachment["VpcId"])
-                    client.delete_internet_gateway(InternetGatewayId=igw["InternetGatewayId"])
+                    for attachment in entity["Attachments"]:                    
+                        client.detach_internet_gateway(InternetGatewayId=entity["InternetGatewayId"], VpcId=attachment["VpcId"])
+                    client.delete_internet_gateway(InternetGatewayId=entity["InternetGatewayId"])
                 except ClientError as e:
                     self._log.error(e.response['Error']['Message'])
 
-    def _process_default_subnets(self, client, default_vpc_id, region):
-        subnets = client.describe_subnets(
-            Filters=[{ "Name": "vpc-id", "Values": [default_vpc_id] }]
-        )
+    def _process_default_subnets(self, client, default_vpc_filter, region):
+        entities = client.describe_subnets(Filters=[default_vpc_filter])
         
-        for subnet in subnets["Subnets"]:
-            message_subnet = 'Default Subnet %s has been found in %s' % (subnet["SubnetId"], region)
+        for entity in entities["Subnets"]:
+            message = '[%s] Default Subnet %s has been found' % (region, entity["SubnetId"])
             if self.dry_run:
-                self._log.info(message_subnet)
+                self._log.info(message)
             else:
-                self._log.info('%s ...deleting' % message_subnet)
+                self._log.info('%s ...deleting' % message)
                 try:                    
-                    client.delete_subnet(SubnetId=subnet["SubnetId"])
+                    client.delete_subnet(SubnetId=entity["SubnetId"])
+                except ClientError as e:
+                    self._log.error(e.response['Error']['Message'])
+
+    def _process_default_sgs(self, client, default_vpc_filter, region):
+        entities = client.describe_security_groups(Filters=[default_vpc_filter])
+        
+        for entity in entities["SecurityGroups"]:
+            message = '[%s] Default Security Group %s has been found' % (region, entity["GroupId"])
+            if self.dry_run:
+                self._log.info(message)
+            else:
+                self._log.info('%s ...deleting' % message)
+                try:
+                    # default security group will be deleted along with default VPC
+                    if entity['GroupName'] == 'default': 
+                        continue       
+                    client.delete_security_group(GroupId=entity["GroupId"])
+                except ClientError as e:
+                    self._log.error(e.response['Error']['Message'])
+
+    def _process_default_route_tables(self, client, default_vpc_filter, region):
+        entities = client.describe_route_tables(Filters=[default_vpc_filter])
+        
+        for entity in entities["RouteTables"]:
+            message = '[%s] Default Route Table %s has been found' % (region, entity["RouteTableId"])
+            if self.dry_run:
+                self._log.info(message)
+            else:
+                self._log.info('%s ...deleting' % message)
+                try:
+                    # main route table will be deleted along with default VPC
+                    if any(association['Main'] for association in entity['Associations']): 
+                        continue          
+                    client.delete_route_table(RouteTableId=entity["RouteTableId"])
+                except ClientError as e:
+                    self._log.error(e.response['Error']['Message'])
+
+    def _process_default_nacls(self, client, default_vpc_filter, region):
+        entities = client.describe_network_acls(Filters=[default_vpc_filter])
+        
+        for entity in entities["NetworkAcls"]:
+            message = '[%s] Default Network ACL %s has been found' % (region, entity["NetworkAclId"])
+            if self.dry_run:
+                self._log.info(message)
+            else:
+                self._log.info('%s ...deleting' % message)
+                try:
+                    # default network ACL will be deleted along with default VPC
+                    if entity['IsDefault']: 
+                        continue             
+                    client.delete_network_acl(NetworkAclId=entity["NetworkAclId"])
                 except ClientError as e:
                     self._log.error(e.response['Error']['Message'])
 
@@ -82,23 +129,29 @@ class AwsDefaultCleaner(object):
         try:
             vpcs = client.describe_vpcs(Filters=[{ 'Name': 'isDefault', 'Values': ['true'] }])
             if not vpcs.get('Vpcs'):
-                self._log.info('No default VPCs has been found in %s' % region)
+                self._log.info('[%s] No default VPCs has been found' % region)
             else:
                 default_vpc_id = vpcs['Vpcs'][0]['VpcId']
-                self._process_default_igw(client, default_vpc_id, region)
-                self._process_default_subnets(client, default_vpc_id, region)
+                default_vpc_filter = { "Name": "vpc-id", "Values": [default_vpc_id] }
+                default_vpc_filter_igw = { "Name": "attachment.vpc-id", "Values": [default_vpc_id] }
+                self._process_default_igw(client, default_vpc_filter_igw, region)
+                self._process_default_subnets(client, default_vpc_filter, region)
+                self._process_default_route_tables(client, default_vpc_filter, region)
+                self._process_default_nacls(client, default_vpc_filter, region)
+                self._process_default_sgs(client, default_vpc_filter, region)
 
-                message_vpc = 'Default VPC %s has been found in %s' % (default_vpc_id, region)
+                message = '[%s] Default VPC %s has been found' % (region, default_vpc_id)
                 if self.dry_run:
-                    self._log.info(message_vpc)
+                    self._log.info(message)
                 else:
-                    self._log.info('%s ...deleting' % message_vpc)                    
+                    self._log.info('%s ...deleting' % message)                    
                     try:
                         client.delete_vpc(VpcId=default_vpc_id)
                     except ClientError as e:
                         self._log.error(e.response['Error']['Message'])
+            
         except ClientError as e:
-                self._log.error("Unable to describe VPCs in region %s: %s" % (region, e.response['Error']['Message']))
+            self._log.error("Unable to describe VPCs in region %s: %s" % (region, e.response['Error']['Message']))
 
     def _process_regions(self):
         if self.regions == ():
